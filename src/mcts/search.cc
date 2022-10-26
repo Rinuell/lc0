@@ -128,9 +128,9 @@ class MEvaluator {
 
  private:
   static bool WithinThreshold(const Node* parent, float q_threshold) {
-    return std::abs(parent->GetQ(0.0f)) > q_threshold;
+    return std::abs(parent->GetQ(0.0f, 0.0f, 1.0f, 0.0f, 1.0f)) > q_threshold;
   }
-
+ 
   const bool enabled_;
   const float m_slope_;
   const float m_cap_;
@@ -229,7 +229,9 @@ void Search::SendUciInfo() REQUIRES(nodes_mutex_) REQUIRES(counters_mutex_) {
   common_info.tb_hits = tb_hits_.load(std::memory_order_acquire);
 
   int multipv = 0;
-  const auto default_q = -root_node_->GetQ(-draw_score);
+  const auto default_q = -root_node_->GetQ(
+      -draw_score, params_.GetDrawFactorW(), params_.GetWinFactor(),
+      params_.GetDrawFactorL(), params_.GetLoseFactor());
   const auto default_wl = -root_node_->GetWL();
   const auto default_d = root_node_->GetD();
   for (const auto& edge : edges) {
@@ -238,7 +240,9 @@ void Search::SendUciInfo() REQUIRES(nodes_mutex_) REQUIRES(counters_mutex_) {
     auto& uci_info = uci_infos.back();
     const auto wl = edge.GetWL(default_wl);
     const auto floatD = edge.GetD(default_d);
-    const auto q = edge.GetQ(default_q, draw_score);
+    const auto q = edge.GetQ(default_q, draw_score, params_.GetDrawFactorW(),
+                             params_.GetWinFactor(), params_.GetDrawFactorL(),
+                             params_.GetLoseFactor());
     if (edge.IsTerminal() && wl != 0.0f) {
       uci_info.mate = std::copysign(
           std::round(edge.GetM(0.0f) + 1) / 2 + (edge.IsTbTerminal() ? 100 : 0),
@@ -348,21 +352,26 @@ float Search::GetDrawScore(bool is_odd_depth) const {
 
 namespace {
 inline float GetFpu(const SearchParams& params, Node* node, bool is_root_node,
-                    float draw_score) {
+                    float draw_score, float DrawFactorW, float WinFactor,
+                    float DrawFactorL, float LoseFactor) {
   const auto value = params.GetFpuValue(is_root_node);
   return params.GetFpuAbsolute(is_root_node)
              ? value
-             : -node->GetQ(-draw_score) -
+             : -node->GetQ(-draw_score, DrawFactorW, WinFactor, DrawFactorL,
+                           LoseFactor) -
                    value * std::sqrt(node->GetVisitedPolicy());
 }
 
 // Faster version for if visited_policy is readily available already.
 inline float GetFpu(const SearchParams& params, Node* node, bool is_root_node,
-                    float draw_score, float visited_pol) {
+                    float draw_score, float visited_pol, float DrawFactorW,
+                    float WinFactor, float DrawFactorL, float LoseFactor) {
   const auto value = params.GetFpuValue(is_root_node);
   return params.GetFpuAbsolute(is_root_node)
              ? value
-             : -node->GetQ(-draw_score) - value * std::sqrt(visited_pol);
+             : -node->GetQ(-draw_score, DrawFactorW, WinFactor, DrawFactorL,
+                           LoseFactor) -
+                   value * std::sqrt(visited_pol);
 }
 
 inline float ComputeCpuct(const SearchParams& params, uint32_t N,
@@ -379,7 +388,9 @@ std::vector<std::string> Search::GetVerboseStats(Node* node) const {
   const bool is_odd_depth = !is_root;
   const bool is_black_to_move = (played_history_.IsBlackToMove() == is_root);
   const float draw_score = GetDrawScore(is_odd_depth);
-  const float fpu = GetFpu(params_, node, is_root, draw_score);
+  const float fpu = GetFpu(params_, node, is_root, draw_score,
+                           params_.GetDrawFactorW(), params_.GetWinFactor(),
+                           params_.GetDrawFactorL(), params_.GetLoseFactor());
   const float cpuct = ComputeCpuct(params_, node->GetTotalVisits(), is_root);
   const float U_coeff =
       cpuct * std::sqrt(std::max(node->GetChildrenVisits(), 1u));
@@ -387,11 +398,19 @@ std::vector<std::string> Search::GetVerboseStats(Node* node) const {
   for (const auto& edge : node->Edges()) edges.push_back(edge);
 
   std::sort(edges.begin(), edges.end(),
-            [&fpu, &U_coeff, &draw_score](EdgeAndNode a, EdgeAndNode b) {
+            [&](EdgeAndNode a, EdgeAndNode b) {
               return std::forward_as_tuple(
-                         a.GetN(), a.GetQ(fpu, draw_score) + a.GetU(U_coeff)) <
+                   a.GetN(),
+                   a.GetQ(fpu, draw_score, params_.GetDrawFactorW(),
+                          params_.GetWinFactor(), params_.GetDrawFactorL(),
+                          params_.GetLoseFactor()) +
+                       a.GetU(U_coeff)) <
                      std::forward_as_tuple(
-                         b.GetN(), b.GetQ(fpu, draw_score) + b.GetU(U_coeff));
+                   b.GetN(),
+                   b.GetQ(fpu, draw_score, params_.GetDrawFactorW(),
+                          params_.GetWinFactor(), params_.GetDrawFactorL(),
+                          params_.GetLoseFactor()) +
+                       b.GetU(U_coeff));
             });
 
   auto print = [](auto* oss, auto pre, auto v, auto post, auto w, int p = 0) {
@@ -415,13 +434,20 @@ std::vector<std::string> Search::GetVerboseStats(Node* node) const {
     } else {
       *oss << "(WL:  -.-----) (D: -.---) (M:  -.-) ";
     }
-    print(oss, "(Q: ", n ? sign * n->GetQ(sign * draw_score) : fpu, ") ", 8, 5);
+    print(oss, "(Q: ",
+          n ? sign * n->GetQ(sign * draw_score, params_.GetDrawFactorW(),
+                             params_.GetWinFactor(), params_.GetDrawFactorL(),
+                             params_.GetLoseFactor())
+            : fpu,
+          ") ", 8, 5);
   };
   auto print_tail = [&](auto* oss, const auto* n) {
     const auto sign = n == node ? -1 : 1;
     std::optional<float> v;
     if (n && n->IsTerminal()) {
-      v = n->GetQ(sign * draw_score);
+      v = n->GetQ(sign * draw_score, params_.GetDrawFactorW(),
+                  params_.GetWinFactor(), params_.GetDrawFactorL(),
+                  params_.GetLoseFactor());
     } else if (n) {
       auto history = played_history_;
       if (!is_root) {
@@ -455,7 +481,9 @@ std::vector<std::string> Search::GetVerboseStats(Node* node) const {
                                ? MEvaluator(params_, node)
                                : MEvaluator();
   for (const auto& edge : edges) {
-    float Q = edge.GetQ(fpu, draw_score);
+    float Q = edge.GetQ(fpu, draw_score, params_.GetDrawFactorW(),
+                        params_.GetWinFactor(), params_.GetDrawFactorL(),
+                        params_.GetLoseFactor());
     float M = m_evaluator.GetM(edge, Q);
     std::ostringstream oss;
     oss << std::left;
@@ -650,7 +678,7 @@ std::vector<EdgeAndNode> Search::GetBestChildrenNoTemperature(Node* parent,
                           : edges.end();
   std::partial_sort(
       edges.begin(), middle, edges.end(),
-      [draw_score](const auto& a, const auto& b) {
+      [draw_score, this](const auto& a, const auto& b) {
         // The function returns "true" when a is preferred to b.
 
         // Lists edge types from less desirable to more desirable.
@@ -700,8 +728,18 @@ std::vector<EdgeAndNode> Search::GetBestChildrenNoTemperature(Node* parent,
           // Default doesn't matter here so long as they are the same as either
           // both are N==0 (thus we're comparing equal defaults) or N!=0 and
           // default isn't used.
-          if (a.GetQ(0.0f, draw_score) != b.GetQ(0.0f, draw_score)) {
-            return a.GetQ(0.0f, draw_score) > b.GetQ(0.0f, draw_score);
+          if (a.GetQ(0.0f, draw_score, params_.GetDrawFactorW(),
+                     params_.GetWinFactor(), params_.GetDrawFactorL(),
+                     params_.GetLoseFactor()) !=
+              b.GetQ(0.0f, draw_score, params_.GetDrawFactorW(),
+                     params_.GetWinFactor(), params_.GetDrawFactorL(),
+                     params_.GetLoseFactor())) {
+            return a.GetQ(0.0f, draw_score, params_.GetDrawFactorW(),
+                          params_.GetWinFactor(), params_.GetDrawFactorL(),
+                          params_.GetLoseFactor()) >
+                   b.GetQ(0.0f, draw_score, params_.GetDrawFactorW(),
+                          params_.GetWinFactor(), params_.GetDrawFactorL(),
+                          params_.GetLoseFactor());
           }
           return a.GetP() > b.GetP();
         }
@@ -738,8 +776,9 @@ EdgeAndNode Search::GetBestRootChildWithTemperature(float temperature) const {
   float max_n = 0.0;
   const float offset = params_.GetTemperatureVisitOffset();
   float max_eval = -1.0f;
-  const float fpu =
-      GetFpu(params_, root_node_, /* is_root= */ true, draw_score);
+  const float fpu = GetFpu(params_, root_node_, /* is_root= */ true, draw_score,
+                           params_.GetDrawFactorW(), params_.GetWinFactor(),
+                           params_.GetDrawFactorL(), params_.GetLoseFactor());
 
   for (auto& edge : root_node_->Edges()) {
     if (!root_move_filter_.empty() &&
@@ -749,7 +788,9 @@ EdgeAndNode Search::GetBestRootChildWithTemperature(float temperature) const {
     }
     if (edge.GetN() + offset > max_n) {
       max_n = edge.GetN() + offset;
-      max_eval = edge.GetQ(fpu, draw_score);
+      max_eval = edge.GetQ(fpu, draw_score, params_.GetDrawFactorW(),
+                           params_.GetWinFactor(), params_.GetDrawFactorL(),
+                           params_.GetLoseFactor());
     }
   }
 
@@ -762,7 +803,10 @@ EdgeAndNode Search::GetBestRootChildWithTemperature(float temperature) const {
                   edge.GetMove()) == root_move_filter_.end()) {
       continue;
     }
-    if (edge.GetQ(fpu, draw_score) < min_eval) continue;
+    if (edge.GetQ(fpu, draw_score, params_.GetDrawFactorW(),
+                  params_.GetWinFactor(), params_.GetDrawFactorL(),
+                  params_.GetLoseFactor()) < min_eval)
+      continue;
     sum += std::pow(
         std::max(0.0f,
                  (max_n <= 0.0f
@@ -784,7 +828,10 @@ EdgeAndNode Search::GetBestRootChildWithTemperature(float temperature) const {
                   edge.GetMove()) == root_move_filter_.end()) {
       continue;
     }
-    if (edge.GetQ(fpu, draw_score) < min_eval) continue;
+    if (edge.GetQ(fpu, draw_score, params_.GetDrawFactorW(),
+                  params_.GetWinFactor(), params_.GetDrawFactorL(),
+                  params_.GetLoseFactor()) < min_eval)
+      continue;
     if (idx-- == 0) return edge;
   }
   assert(false);
@@ -845,7 +892,9 @@ void Search::PopulateCommonIterationStats(IterationStats* stats) {
   if (root_node_->GetN() > 0) {
     const auto draw_score = GetDrawScore(true);
     const float fpu =
-        GetFpu(params_, root_node_, /* is_root_node */ true, draw_score);
+        GetFpu(params_, root_node_, /* is_root_node */ true, draw_score,
+               params_.GetDrawFactorW(), params_.GetWinFactor(),
+               params_.GetDrawFactorL(), params_.GetLoseFactor());
     float max_q_plus_m = -1000;
     uint64_t max_n = 0;
     bool max_n_has_max_q_plus_m = true;
@@ -854,7 +903,9 @@ void Search::PopulateCommonIterationStats(IterationStats* stats) {
                                  : MEvaluator();
     for (const auto& edge : root_node_->Edges()) {
       const auto n = edge.GetN();
-      const auto q = edge.GetQ(fpu, draw_score);
+      const auto q = edge.GetQ(fpu, draw_score, params_.GetDrawFactorW(),
+                               params_.GetWinFactor(), params_.GetDrawFactorL(),
+                               params_.GetLoseFactor());
       const auto m = m_evaluator.GetM(edge, q);
       const auto q_plus_m = q + m;
       stats->edge_n.push_back(n);
@@ -1587,11 +1638,15 @@ void SearchWorker::PickNodesToExtendTask(
       for (Node* child : node->VisitedNodes()) {
         int index = child->Index();
         visited_pol += child->GetP();
-        float q = child->GetQ(draw_score);
+        float q = child->GetQ(draw_score, params_.GetDrawFactorW(),
+                              params_.GetWinFactor(), params_.GetDrawFactorL(),
+                              params_.GetLoseFactor());
         current_util[index] = q + m_evaluator.GetM(child, q);
       }
       const float fpu =
-          GetFpu(params_, node, is_root_node, draw_score, visited_pol);
+          GetFpu(params_, node, is_root_node, draw_score, visited_pol,
+                 params_.GetDrawFactorW(), params_.GetWinFactor(),
+                 params_.GetDrawFactorL(), params_.GetLoseFactor());
       for (int i = 0; i < max_needed; i++) {
         if (current_util[i] == std::numeric_limits<float>::lowest()) {
           current_util[i] = fpu + m_evaluator.GetDefaultM();
@@ -1963,12 +2018,18 @@ int SearchWorker::PrefetchIntoCache(Node* node, int budget, bool is_odd_depth) {
   const float puct_mult =
       cpuct * std::sqrt(std::max(node->GetChildrenVisits(), 1u));
   const float fpu =
-      GetFpu(params_, node, node == search_->root_node_, draw_score);
+      GetFpu(params_, node, node == search_->root_node_, draw_score,
+             params_.GetDrawFactorW(), params_.GetWinFactor(),
+             params_.GetDrawFactorL(), params_.GetLoseFactor());
   for (auto& edge : node->Edges()) {
     if (edge.GetP() == 0.0f) continue;
     // Flip the sign of a score to be able to easily sort.
     // TODO: should this use logit_q if set??
-    scores.emplace_back(-edge.GetU(puct_mult) - edge.GetQ(fpu, draw_score),
+    scores.emplace_back(
+        -edge.GetU(puct_mult) -
+            edge.GetQ(fpu, draw_score, params_.GetDrawFactorW(),
+                      params_.GetWinFactor(), params_.GetDrawFactorL(),
+                      params_.GetLoseFactor()),
                         edge);
   }
 
@@ -2000,7 +2061,9 @@ int SearchWorker::PrefetchIntoCache(Node* node, int budget, bool is_odd_depth) {
       // Sign of the score was flipped for sorting, so flip it back.
       const float next_score = -scores[i + 1].first;
       // TODO: As above - should this use logit_q if set?
-      const float q = edge.GetQ(-fpu, draw_score);
+      const float q = edge.GetQ(
+          -fpu, draw_score, params_.GetDrawFactorW(), params_.GetWinFactor(),
+          params_.GetDrawFactorL(), params_.GetLoseFactor());
       if (next_score > q) {
         budget_to_spend =
             std::min(budget, int(edge.GetP() * puct_mult / (next_score - q) -

@@ -312,6 +312,14 @@ const OptionId SearchParams::kMaxCollisionVisitsScalingEndId{
 const OptionId SearchParams::kMaxCollisionVisitsScalingPowerId{
     "max-collision-visits-scaling-power", "MaxCollisionVisitsScalingPower",
     "Power to apply to the interpolation between 1 and max to make it curved."};
+const OptionId SearchParams::kDrawFactorWId{"draw-factor-W", "DrawFactorW",
+                                            "DrawFactorW"};
+const OptionId SearchParams::kDrawFactorLId{"draw-factor-L", "DrawFactorL",
+                                            "DrawFactorL"};
+const OptionId SearchParams::kWinFactorId{"win-factor", "WinFactor",
+                                          "Win Factor"};
+const OptionId SearchParams::kLoseFactorId{"lose-factor", "LoseFactor",
+                                           "Lose Factor"};
 
 void SearchParams::Populate(OptionsParser* options) {
   // Here the uci optimized defaults" are set.
@@ -392,6 +400,10 @@ void SearchParams::Populate(OptionsParser* options) {
   options->Add<IntOption>(kMinimumWorkPerTaskForProcessingId, 1, 100000) = 8;
   options->Add<IntOption>(kIdlingMinimumWorkId, 0, 10000) = 0;
   options->Add<IntOption>(kThreadIdlingThresholdId, 0, 128) = 1;
+  options->Add<FloatOption>(kDrawFactorWId, 0.0f, 2.0f) = 0.0f;
+  options->Add<FloatOption>(kDrawFactorLId, -1.0f, 2.0f) = 0.0f;
+  options->Add<FloatOption>(kWinFactorId, 0.0f, 2.0f) = 1.0f;
+  options->Add<FloatOption>(kLoseFactorId, 0.0f, 2.0f) = 1.0f;
 
   options->HideOption(kNoiseEpsilonId);
   options->HideOption(kNoiseAlphaId);
@@ -481,7 +493,11 @@ SearchParams::SearchParams(const OptionsDict& options)
       kMaxCollisionVisitsScalingEnd(
           options.Get<int>(kMaxCollisionVisitsScalingEndId)),
       kMaxCollisionVisitsScalingPower(
-          options.Get<float>(kMaxCollisionVisitsScalingPowerId)) {
+          options.Get<float>(kMaxCollisionVisitsScalingPowerId)),
+      kDrawFactorW(options.Get<float>(kDrawFactorWId)),
+      kDrawFactorL(options.Get<float>(kDrawFactorLId)),
+      kWinFactor(options.Get<float>(kWinFactorId)),
+      kLoseFactor(options.Get<float>(kLoseFactorId)) {
   if (std::max(std::abs(kDrawScoreSidetomove), std::abs(kDrawScoreOpponent)) +
           std::max(std::abs(kDrawScoreWhite), std::abs(kDrawScoreBlack)) >
       1.0f) {
