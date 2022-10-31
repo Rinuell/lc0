@@ -285,9 +285,15 @@ class Node {
              float DrawFactorL, float LoseFactor) const {
     float L = std::fmax((1 - wl_ - d_) * 0.5f, 0);
     float W = std::fmax(wl_ + L, 0);
-    return L >= 0.001 ? std::pow(W, WinFactor + DrawFactorW * d_) -
-                        std::pow(L, LoseFactor + DrawFactorL * d_)
-                  : std::pow(W, WinFactor + DrawFactorW * d_);
+    float Q = 0.0f;
+    if (L != 0 && W != 0)
+    {
+      Q = std::pow(W, WinFactor + DrawFactorW * d_) -
+          std::pow(L, LoseFactor + DrawFactorL * d_);
+    } else {
+      Q = wl_;
+    }
+    return Q;
   }
   // Returns node eval, i.e. average subtree V for non-terminal node and -1/0/1
   // for terminal nodes.
